@@ -2,3 +2,4 @@ venv
 .env
 vector_stores
 Vikas.pdf
+.*

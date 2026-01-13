@@ -150,3 +150,4 @@ if __name__ == "__main__":
     que = input("\nQ: ").strip()
     ans = setup_pipeline_and_query(PDF_PATH, que)
     print("\nA:", ans)
+
