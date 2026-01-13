@@ -3,7 +3,7 @@
 import os
 from dotenv import load_dotenv
 
-from langsmith import traceable
+from langsmith import traceable  # <-- key import
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -13,11 +13,16 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
 
+# --- LangSmith env (make sure these are set) ---
+# LANGCHAIN_TRACING_V2=true
+# LANGCHAIN_API_KEY=...
+# LANGCHAIN_PROJECT=pdf_rag_demo
+
 load_dotenv()
 
-PDF_PATH = "islr.pdf"  # <- change to your file
+PDF_PATH = "islr.pdf"  # change to your file
 
-# ----------------- helpers (not traced individually) -----------------
+# ---------- traced setup steps ----------
 @traceable(name="load_pdf")
 def load_pdf(path: str):
     loader = PyPDFLoader(path)
@@ -33,18 +38,19 @@ def split_documents(docs, chunk_size=1000, chunk_overlap=150):
 @traceable(name="build_vectorstore")
 def build_vectorstore(splits):
     emb = OpenAIEmbeddings(model="text-embedding-3-small")
-    return FAISS.from_documents(splits, emb)
+    # FAISS.from_documents internally calls the embedding model:
+    vs = FAISS.from_documents(splits, emb)
+    return vs
 
-# ----------------- parent setup function (traced) -----------------
-@traceable(name="setup_pipeline", tags=["setup"])
-def setup_pipeline(pdf_path: str, chunk_size=1000, chunk_overlap=150):
-    # ✅ These three steps are “clubbed” under this parent function
+# You can also trace a “setup” umbrella span if you want:
+@traceable(name="setup_pipeline")
+def setup_pipeline(pdf_path: str):
     docs = load_pdf(pdf_path)
-    splits = split_documents(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    splits = split_documents(docs)
     vs = build_vectorstore(splits)
     return vs
 
-# ----------------- model, prompt, and run -----------------
+# ---------- pipeline ----------
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 prompt = ChatPromptTemplate.from_messages([
@@ -55,28 +61,25 @@ prompt = ChatPromptTemplate.from_messages([
 def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
-# ----------------- one top-level (root) run -----------------
-@traceable(name="pdf_rag_full_run")
-def setup_pipeline_and_query(pdf_path: str, question: str):
-    # Parent setup run (child of root)
-    vectorstore = setup_pipeline(pdf_path, chunk_size=1000, chunk_overlap=150)
+# Build the index under traced setup
+vectorstore = setup_pipeline(PDF_PATH)
+retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
-    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+parallel = RunnableParallel({
+    "context": retriever | RunnableLambda(format_docs),
+    "question": RunnablePassthrough(),
+})
 
-    parallel = RunnableParallel({
-        "context": retriever | RunnableLambda(format_docs),
-        "question": RunnablePassthrough(),
-    })
+chain = parallel | prompt | llm | StrOutputParser()
 
-    chain = parallel | prompt | llm | StrOutputParser()
+# ---------- run a query (also traced) ----------
+print("PDF RAG ready. Ask a question (or Ctrl+C to exit).")
+q = input("\nQ: ").strip()
 
-    # This LangChain run stays under the same root (since we're inside this traced function)
-    lc_config = {"run_name": "pdf_rag_query"}
-    return chain.invoke(question, config=lc_config)
+# Give the visible run name + tags/metadata so it’s easy to find:
+config = {
+    "run_name": "pdf_rag_query"
+}
 
-# ----------------- CLI -----------------
-if __name__ == "__main__":
-    print("PDF RAG ready. Ask a question (or Ctrl+C to exit).")
-    q = input("\nQ: ").strip()
-    ans = setup_pipeline_and_query(PDF_PATH, q)
-    print("\nA:", ans)
+ans = chain.invoke(q, config=config)
+print("\nA:", ans)
