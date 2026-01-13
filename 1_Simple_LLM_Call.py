@@ -1,9 +1,11 @@
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+import os
 
-load_dotenv()
+load_dotenv(find_dotenv())
+os.environ['LANGCHAIN_PROJECT'] = "Simple_LLM"
 
 # Simple one-line prompt
 prompt = PromptTemplate.from_template("{question}")
@@ -18,6 +20,6 @@ parser = StrOutputParser()
 chain = prompt | model | parser
 
 # Run it
-result = chain.invoke({"question": "What is the capital of Peru?"})
+result = chain.invoke({"question": "What is the capital of India?"})
 print(result)
 
