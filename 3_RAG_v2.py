@@ -39,7 +39,7 @@ def save_metadata(metadata):
     with open(metadata_path, 'wb') as f:
         pickle.dump(metadata, f)
 
-def should_regenerate_vector_store(pdf_path):
+def should_regenerate_vector_store(pdf_path) -> bool:
     """Check if vector store needs to be regenerated."""
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
