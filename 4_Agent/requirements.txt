@@ -1,0 +1,21 @@
+# Core dependencies
+python-dotenv==1.0.0
+
+# LangChain core packages
+langchain==0.3.13
+langchain-core==0.3.28
+langchain-community==0.3.13
+
+# LangChain integrations
+langchain-ollama==0.2.1
+
+# LangSmith for tracing
+langsmith==0.2.4
+
+# Search tool
+duckduckgo-search==6.3.5
+
+# Additional dependencies that may be required
+requests==2.32.3
+urllib3==2.2.3
+
