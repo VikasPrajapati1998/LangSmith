@@ -1,23 +1,15 @@
 import os
 import json
 import urllib.request
-import warnings
 from dotenv import load_dotenv, find_dotenv
 from langchain import hub
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
 from langchain.agents import create_react_agent, AgentExecutor
-from langchain_core.prompts import PromptTemplate
 from langsmith import traceable
-
-# Suppress serialization warnings
-warnings.filterwarnings("ignore", message=".*Failed to use model_dump.*")
 
 # Load environment variables
 load_dotenv(find_dotenv())
-
-# Configure LangSmith
-# os.environ['LANGCHAIN_TRACING_V2'] = 'true'
 os.environ['LANGCHAIN_PROJECT'] = 'Agent'
 
 
@@ -34,14 +26,19 @@ def get_weather_data(city: str) -> str:
         condition, humidity, and wind speed.
     """
     try:
-        # Clean and encode city name
-        city = city.strip().strip("'\"")  # Remove quotes if present
+        if 'city=' in city.lower():
+            city = city.split('=', 1)[1]
+        
+        city = city.strip().strip("'\"").strip()
+        
+        if not city:
+            return "Error: City name is empty after processing"
+        
         url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
         
-        with urllib.request.urlopen(url, timeout=15) as response:  # Increased timeout
+        with urllib.request.urlopen(url, timeout=15) as response:
             data = json.loads(response.read().decode())
         
-        # Check if we got valid data
         if "current_condition" not in data or not data["current_condition"]:
             return f"No weather data available for {city}"
         
@@ -87,60 +84,29 @@ def setup_pipeline():
     llm = ChatOllama(
         model="llama3.2:3b",
         temperature=0,
-        num_predict=256,
+        num_predict=512,
         num_ctx=2048,
-        top_p=0.9
+        top_p=0.9,
+        repeat_penalty=1.1
     )
-
-    # Improved custom prompt - more explicit about when to stop
-    template = '''Answer the following questions as best you can. You have access to the following tools:
-
-{tools}
-
-Use the following format:
-
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-IMPORTANT INSTRUCTIONS:
-1. When you receive weather data in the Observation, you MUST immediately write "I now know the final answer" and provide the Final Answer
-2. DO NOT call the same tool multiple times with the same input
-3. If you get a network error, provide the Final Answer explaining the issue
-4. Action Input should be just the city name without any quotes
-5. Be concise in your Final Answer
-
-Begin!
-
-Question: {input}
-Thought:{agent_scratchpad}'''
-
-    prompt = PromptTemplate.from_template(template)
-
-    # Define tools list
+    
+    # Pull the ReAct prompt template
+    prompt = hub.pull("hwchase17/react")
     tools = [get_weather_data]
-
-    # Create the ReAct agent
     agent = create_react_agent(
         llm=llm,
         tools=tools,
         prompt=prompt
     )
-
-    # Wrap with AgentExecutor - REMOVED early_stopping_method
+    
     agent_executor = AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=True,
-        max_iterations=3,  # Reduced to prevent loops
+        max_iterations=5,
         handle_parsing_errors=True,
         return_intermediate_steps=True,
-        max_execution_time=45  # Reduced timeout
+        max_execution_time=60
     )
     
     return agent_executor
@@ -161,7 +127,6 @@ def run_agent(agent_executor: AgentExecutor, query: str) -> dict:
     try:
         return agent_executor.invoke({"input": query})
     except Exception as e:
-        # Handle timeout or iteration limit gracefully
         return {
             "output": f"I encountered an issue: {str(e)}. Please try again.",
             "intermediate_steps": []
@@ -175,9 +140,9 @@ def main():
     """
     # Example queries
     queries = [
-        "What is the current temp of delhi",
+        # "What is the current temp of delhi",
         # "What is the current temp of gurgaon",
-        # "What is the weather in Mumbai",
+        "What is the weather in Mumbai",
         # "Tell me the temperature in Bangalore",
     ]
     
@@ -204,7 +169,7 @@ def main():
                     print(f"\nStep {i}:")
                     print(f"  Tool: {action.tool}")
                     print(f"  Input: {action.tool_input}")
-                    print(f"  Output: {observation[:150]}...")
+                    print(f"  Output: {observation[:200]}...")
                 print("-"*80)
             
         except KeyboardInterrupt:
@@ -229,3 +194,4 @@ if __name__ == "__main__":
     print("="*80)
     
     main()
+
