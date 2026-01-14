@@ -2,22 +2,30 @@ import os
 import json
 import urllib.request
 from dotenv import load_dotenv, find_dotenv
+from langchain import hub
 from langchain_ollama import ChatOllama
 from langchain_core.tools import tool
-from langchain_core.prompts import PromptTemplate
 from langchain.agents import create_react_agent, AgentExecutor
 from langsmith import traceable
+from pydantic import BaseModel, Field
 
 # Load environment variables
 load_dotenv(find_dotenv())
 os.environ['LANGCHAIN_PROJECT'] = 'Agent-v2'
 
 
+# Pydantic model for structured weather output
+class WeatherResponse(BaseModel):
+    """Structured weather response format"""
+    summary: str = Field(description="A natural language summary of the weather")
+    temperature_description: str = Field(description="Description of temperature and how it feels")
+    conditions_description: str = Field(description="Description of weather conditions and additional details")
+
+
 @tool
 def get_weather_data(city: str) -> str:
     """
     Fetches the current weather data for a given city using wttr.in API.
-    Returns complete weather information that can be used directly in your response.
     
     Args:
         city: Name of the city to get weather for
@@ -68,6 +76,73 @@ def get_weather_data(city: str) -> str:
         return f"Error fetching weather data for {city}: {str(e)}"
 
 
+@tool
+def format_weather_data(weather_data: str) -> str:
+    """
+    Uses AI (qwen2.5:0.5b) to format raw weather data into a natural, human-readable response.
+    This provides the FINAL answer using structured output with Pydantic.
+    
+    Args:
+        weather_data: Raw weather data string from get_weather_data
+        
+    Returns:
+        A beautifully formatted, natural language weather report
+    """
+    try:
+        # Check if it's an error message
+        if "Error:" in weather_data or "City:" not in weather_data:
+            return weather_data
+        
+        # Initialize the lightweight LLM for formatting
+        formatting_llm = ChatOllama(
+            model="qwen2.5:0.5b",
+            temperature=0.7,
+            format="json"
+        )
+        
+        # Use structured output with Pydantic
+        structured_llm = formatting_llm.with_structured_output(WeatherResponse)
+        
+        # Create prompt for the formatting LLM
+        prompt = f"""You are a weather report formatter. Convert this weather data into natural, engaging language.
+
+Weather Data: {weather_data}
+
+Create a friendly, conversational weather report with three parts:
+1. A brief summary sentence
+2. A description of the temperature and how it feels
+3. Details about conditions, humidity, and wind
+
+Be natural and conversational, like a weather reporter speaking to viewers."""
+        
+        # Get structured response
+        response = structured_llm.invoke(prompt)
+        
+        # Combine the structured parts into a flowing narrative
+        formatted_text = f"{response.summary} {response.temperature_description} {response.conditions_description}"
+        
+        return formatted_text
+    
+    except Exception as e:
+        # If AI formatting fails, fall back to simple formatting
+        try:
+            parts = {}
+            for item in weather_data.split(", "):
+                if ": " in item:
+                    key, value = item.split(": ", 1)
+                    parts[key.strip()] = value.strip()
+            
+            return (
+                f"The current weather in {parts.get('City', 'the city')} is "
+                f"{parts.get('Temperature', 'unknown')} with {parts.get('Condition', 'unknown conditions').lower()}. "
+                f"It feels like {parts.get('Feels Like', 'unknown')}. "
+                f"The humidity is {parts.get('Humidity', 'unknown')} and "
+                f"wind speed is {parts.get('Wind Speed', 'unknown')}."
+            )
+        except:
+            return weather_data
+
+
 @traceable(name="Setup Pipeline")
 def setup_pipeline():
     """
@@ -86,38 +161,11 @@ def setup_pipeline():
         repeat_penalty=1.1
     )
     
-    # Custom ReAct prompt template
-    template = """You are a helpful weather assistant that can fetch weather information for any city.
-
-You have access to the following tools:
-
-{tools}
-
-Use the following format:
-
-Question: the input question you must answer
-Thought: think about what you need to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat as needed)
-Thought: I now have all the information I need
-Final Answer: provide a clear, natural response to the user
-
-Important Guidelines:
-- Once you get weather data from the tool, you have everything you need
-- Format the weather information in a natural, conversational way in your Final Answer
-- Do not call tools multiple times for the same information
-- Be concise and helpful
-
-Begin!
-
-Question: {input}
-Thought: {agent_scratchpad}"""
+    # Pull the ReAct prompt template
+    prompt = hub.pull("hwchase17/react")
     
-    prompt = PromptTemplate.from_template(template)
-    
-    tools = [get_weather_data]
+    # Now we have TWO tools
+    tools = [get_weather_data, format_weather_data]
     
     agent = create_react_agent(
         llm=llm,
@@ -129,10 +177,11 @@ Thought: {agent_scratchpad}"""
         agent=agent,
         tools=tools,
         verbose=True,
-        max_iterations=5,  # Limit to prevent excessive loops
+        max_iterations=4,
         handle_parsing_errors=True,
         return_intermediate_steps=True,
-        max_execution_time=60
+        max_execution_time=60,
+        early_stopping_method="generate"
     )
     
     return agent_executor
@@ -164,10 +213,14 @@ def main():
     """
     Main function to run the agent with example queries.
     """
-    query = "What is the weather of Pune, India." 
+    query = "What is the weather in Pune"
     agent_executor = setup_pipeline()
     response = run_agent(agent_executor, query)
+    
+    print("\n" + "="*80)
+    print("FINAL ANSWER:")
     print(response['output'])
+    print("="*80)
 
 
 if __name__ == "__main__":
@@ -176,5 +229,10 @@ if __name__ == "__main__":
         print("⚠️  Warning: LANGCHAIN_API_KEY not found in environment variables.")
         print("   LangSmith tracing will not work without a valid API key.")
         print("   Set it in your .env file or export it as an environment variable.\n")
-        
+    
+    print("="*80)
+    print("Weather Agent - Powered by llama3.2:3b")
+    print("Available tools: get_weather_data, format_weather_data (with qwen2.5:0.5b)")
+    print("="*80)
+    
     main()
